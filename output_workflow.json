@@ -1,0 +1,109 @@
+{
+  "common_components": {
+    "delta_load": {
+      "description": "Handles incremental data based on last updated date or surrogate key.",
+      "transformations": [
+        "EXP_DELTA_FLAG",
+        "FIL_UPDATED_ROWS",
+        "RTR_DELTA_PROCESS"
+      ],
+      "joins": [],
+      "filters": ["LAST_UPDATED > $run_date"],
+      "reusable": true,
+      "layer": "delta"
+    },
+    "publish_layer": {
+      "description": "Loads curated data to consumer-facing tables.",
+      "transformations": [
+        "EXP_CURATE_FIELDS",
+        "AGG_METRICS",
+        "RTR_FINAL_CLEAN"
+      ],
+      "joins": ["JOIN_TO_MASTER_DIM"],
+      "filters": [],
+      "reusable": true,
+      "layer": "publish"
+    },
+    "lookup_mapping": {
+      "description": "Applies code lookups or SCD Type-2 reference joins.",
+      "transformations": ["LKP_COUNTRY", "LKP_ACCOUNT"],
+      "joins": [
+        {
+          "source": "input_table",
+          "lookup": "dim_country",
+          "on": ["country_code"],
+          "type": "left_outer"
+        }
+      ],
+      "layer": "preland"
+    }
+  },
+
+  "workflows_classified": {
+    "wf_customer_delta": {
+      "workflow_file": "wf_customer_delta.xml",
+      "layer": "delta",
+      "identified_components": [
+        "delta_load",
+        "lookup_mapping"
+      ],
+      "source_tables": ["stg_customer"],
+      "target_tables": ["delta_customer"],
+      "description": "Handles delta load for customer dimension"
+    },
+    "wf_sales_publish": {
+      "workflow_file": "wf_sales_publish.xml",
+      "layer": "publish",
+      "identified_components": [
+        "publish_layer",
+        "lookup_mapping"
+      ],
+      "source_tables": ["delta_sales"],
+      "target_tables": ["pub_sales"],
+      "description": "Publishes final sales data to pub layer"
+    },
+    "wf_country_lookup": {
+      "workflow_file": "wf_country_lookup.xml",
+      "layer": "preland",
+      "identified_components": ["lookup_mapping"],
+      "source_tables": ["raw_country"],
+      "target_tables": ["dim_country"],
+      "description": "Loads and maps country master data"
+    }
+  },
+
+  "pipeline_templates": {
+    "delta": {
+      "nodes": [
+        "extract_delta_source",
+        "apply_delta_filter",
+        "join_with_lkp_country",
+        "write_to_delta"
+      ],
+      "inputs": ["stg_customer"],
+      "outputs": ["delta_customer"]
+    },
+    "publish": {
+      "nodes": [
+        "read_delta_sales",
+        "agg_sales_metrics",
+        "apply_curate_transform",
+        "write_to_publish"
+      ],
+      "inputs": ["delta_sales"],
+      "outputs": ["pub_sales"]
+    }
+  },
+
+  "node_snippets": {
+    "apply_delta_filter": {
+      "function": "def apply_delta_filter(df):\n    return df.filter(df['LAST_UPDATED'] > lit(run_date))"
+    },
+    "join_with_lkp_country": {
+      "function": "def join_with_lkp_country(df, lkp):\n    return df.join(lkp, df['country_code'] == lkp['code'], 'left_outer')"
+    },
+    "agg_sales_metrics": {
+      "function": "def agg_sales_metrics(df):\n    return df.groupBy('region').agg(sum('amount').alias('total_sales'))"
+    }
+  }
+}
